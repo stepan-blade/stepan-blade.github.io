@@ -44,7 +44,7 @@
             const data = await res.json();
             
             // Обновление цифр
-            document.getElementById('balance').innerText = `$${data.balance}`;
+            document.getElementById('balance').innerText = `$${data.balance.toFixed(2)}`;
             const badge = document.getElementById('status-badge');
             badge.innerText = data.status;
             badge.className = data.status === "В сделке" ? "px-3 py-1 rounded-full text-[10px] font-bold bg-green-500/20 text-green-500" : "px-3 py-1 rounded-full text-[10px] font-bold bg-zinc-800 text-zinc-400";
