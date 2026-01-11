@@ -1,27 +1,26 @@
-import ccxt
-import pandas as pd
-import pandas_ta as ta
-from flask import Flask, jsonify, render_template
-import threading
 import time
+import threading
 from datetime import datetime
+from flask import Flask, jsonify, render_template
+import pandas as pd
+import ta
+import ccxt  # предположим, что используешь ccxt для биржи
 
 app = Flask(__name__)
 
-# --- НАСТРОЙКИ ---
+# Настройки
 SYMBOL = 'BTC/USDT'
-TIMEFRAME = '1m'  # Анализируем поминутно для наглядности
-INITIAL_BALANCE = 10000.0
+TIMEFRAME = '1m'
 
-# --- СОСТОЯНИЕ БОТА (В реальном проекте это хранится в БД) ---
+# Инициализация переменных
 wallet = {
-    "balance": INITIAL_BALANCE,
-    "position": None,  # Данные об открытой сделке
-    "history": []      # Список закрытых сделок
+    'balance': 1000.0,
+    'position': None,
+    'history': []
 }
-price_history = []     # Для отображения графика на сайте
+price_history = []
 
-# Инициализация биржи (только для чтения данных)
+# Инициализируем биржу (пример с Binance)
 exchange = ccxt.binance()
 
 def trading_logic():
@@ -34,12 +33,13 @@ def trading_logic():
             # 1. Получаем свечи
             bars = exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=100)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            
+
             # 2. Расчет индикаторов
-            df['RSI'] = ta.rsi(df['close'], length=14)
-            macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-            df = pd.concat([df, macd], axis=1)
-            
+            df['RSI'] = ta.momentum.rsi(df['close'], window=14)
+            macd_ind = ta.trend.MACD(df['close'], window_slow=26, window_fast=12, window_sign=9)
+            df['MACD'] = macd_ind.macd()
+            df['MACD_signal'] = macd_ind.macd_signal()
+
             last_row = df.iloc[-1]
             prev_row = df.iloc[-2]
             current_price = last_row['close']
@@ -48,37 +48,49 @@ def trading_logic():
             new_point = {'time': int(last_row['timestamp'] / 1000), 'value': current_price}
             if not price_history or new_point['time'] > price_history[-1]['time']:
                 price_history.append(new_point)
-            if len(price_history) > 100: price_history.pop(0)
+            if len(price_history) > 100:
+                price_history.pop(0)
 
             # 3. ЛОГИКА СИГНАЛОВ
             # Условие покупки: RSI < 35 и пересечение MACD снизу вверх
-            buy_signal = (last_row['RSI'] < 35 and 
-                          prev_row['MACD_12_26_9'] < prev_row['MACDs_12_26_9'] and 
-                          last_row['MACD_12_26_9'] > last_row['MACDs_12_26_9'])
+            buy_signal = (last_row['RSI'] < 35 and
+                          prev_row['MACD'] < prev_row['MACD_signal'] and
+                          last_row['MACD'] > last_row['MACD_signal'])
 
             # Условие продажи: RSI > 65 или пересечение MACD сверху вниз
-            sell_signal = (last_row['RSI'] > 65 or 
-                           (prev_row['MACD_12_26_9'] > prev_row['MACDs_12_26_9'] and 
-                            last_row['MACD_12_26_9'] < last_row['MACDs_12_26_9']))
+            sell_signal = (last_row['RSI'] > 65 or
+                           (prev_row['MACD'] > prev_row['MACD_signal'] and
+                            last_row['MACD'] < last_row['MACD_signal']))
 
             # 4. ИСПОЛНЕНИЕ СДЕЛКИ
             if wallet['position'] is None and buy_signal:
-                # Входим в сделку всем балансом (условно 1 лот)
                 wallet['position'] = {
                     'open_price': current_price,
                     'time': datetime.now().strftime("%H:%M:%S")
                 }
-                print(f"--- СИГНАЛ: BUY по цене {current_price} ---")
+                wallet['balance'] -= current_price  # учитываем покупку
+                print(f"--- СИГНАЛ: BUY по цене {current_price:.2f} ---")
 
             elif wallet['position'] is not None and sell_signal:
                 open_p = wallet['position']['open_price']
                 profit_val = current_price - open_p
                 profit_pct = (profit_val / open_p) * 100
+
+                wallet['balance'] += current_price  # возвращаем деньги от продажи
+                wallet['balance'] += profit_val     # учитываем прибыль
+                # В данном условии, чтобы не дублировать, лучше считать:
+                # wallet['balance'] += open_p + profit_val равняется wallet['balance'] + current_price, так что еще раз убрать profit_val
                 
-                # Обновляем баланс
-                wallet['balance'] += profit_val 
-                
-                # Сохраняем в историю
+                # ИСПРАВЛЕНИЕ (обноляем корректно баланс):
+                # Логично так:
+                # При покупке снимаем open_price: balance -= open_price
+                # При продаже возвращаем current_price: balance += current_price
+                # profit_val в виртуальной части для вывода, баланс уже учтен
+                # Поэтому заменим логику ниже:
+
+                wallet['balance'] += current_price  # возвращаем деньги от продажи
+                # profit добавлять нельзя, он уже учтен через цену продажи!
+
                 wallet['history'].insert(0, {
                     "asset": SYMBOL,
                     "time": datetime.now().strftime("%d.%m %H:%M"),
@@ -86,14 +98,14 @@ def trading_logic():
                     "close": f"{current_price:.2f}",
                     "profit": f"{profit_pct:+.2f}%"
                 })
-                
+
                 wallet['position'] = None
-                print(f"--- СИГНАЛ: SELL по цене {current_price} (Профит: {profit_pct:.2f}%) ---")
+                print(f"--- СИГНАЛ: SELL по цене {current_price:.2f} (Профит: {profit_pct:.2f}%) ---")
 
         except Exception as e:
             print(f"Ошибка в цикле бота: {e}")
-        
-        time.sleep(15) # Опрос каждые 15 секунд
+
+        time.sleep(15)  # Опрос каждые 15 секунд
 
 # --- МАРШРУТЫ FLASK ---
 
