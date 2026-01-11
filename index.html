@@ -1,77 +1,117 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <title>Crypto Analysis Bot</title>
+    <meta charset="UTF-8" />
+    <title>Торговый бот</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f7f9fc; color: #222; }
+        h1 { margin-bottom: 10px; }
+        #balance, #status { font-size: 1.2em; margin-bottom: 15px; }
+        table { border-collapse: collapse; width: 100%; max-width: 600px; margin-bottom: 20px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+        th { background-color: #eee; }
+        #chart { width: 100%; max-width: 600px; height: 300px; background: #fff; border: 1px solid #ccc; }
+    </style>
 </head>
-<body class="bg-black text-white p-4">
+<body>
 
-    <div class="bg-zinc-900 p-5 rounded-3xl mb-4 border border-zinc-800 shadow-2xl">
-        <div class="flex justify-between items-start">
-            <div>
-                <p class="text-zinc-500 text-xs uppercase tracking-wider">Демо-баланс</p>
-                <h1 id="balance" class="text-3xl font-bold text-yellow-500">$0.00</h1>
-            </div>
-            <div id="status-badge" class="px-3 py-1 rounded-full text-[10px] font-bold bg-zinc-800 text-zinc-400">
-                АНАЛИЗ РЫНКА
-            </div>
-        </div>
-    </div>
+<h1>Торговый бот</h1>
 
-    <div class="bg-zinc-900 p-2 rounded-3xl mb-6 border border-zinc-800">
-        <div id="chart" class="w-full h-64"></div>
-    </div>
+<div id="balance">Баланс: —</div>
+<div id="status">Статус: —</div>
 
-    <h2 class="text-lg font-bold mb-3 px-2">История сигналов</h2>
-    <div id="history-list" class="space-y-3 pb-20">
-        </div>
+<h2>История сделок</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Актив</th>
+            <th>Время</th>
+            <th>Открытие</th>
+            <th>Закрытие</th>
+            <th>Прибыль</th>
+        </tr>
+    </thead>
+    <tbody id="history-body">
+        <tr><td colspan="5">Загрузка...</td></tr>
+    </tbody>
+</table>
 
-    <script>
-        // Инициализация графика
-        const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-            layout: { backgroundColor: 'transparent', textColor: '#d1d5db' },
-            grid: { vertLines: { color: '#1f2937' }, horzLines: { color: '#1f2937' } },
-            crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-            timeScale: { borderColor: '#374151', timeVisible: true },
+<h2>График цены</h2>
+<canvas id="chart"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+    const balanceEl = document.getElementById('balance');
+    const statusEl = document.getElementById('status');
+    const historyBody = document.getElementById('history-body');
+    const ctx = document.getElementById('chart').getContext('2d');
+
+    let chart;
+
+    function createChart(data) {
+        if(chart) chart.destroy();
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: data.map(p => new Date(p.time * 1000).toLocaleTimeString()),
+                datasets: [{
+                    label: 'Цена ' + 'BTC/USDT',
+                    data: data.map(p => p.value),
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    fill: true,
+                    tension: 0.25
+                }]
+            },
+            options: {
+                scales: {
+                    x: { display: true, title: { display: true, text: 'Время' }},
+                    y: { display: true, title: { display: true, text: 'Цена' }}
+                },
+                responsive: true,
+                animation: false
+            }
         });
-        const lineSeries = chart.addLineSeries({ color: '#eab308', lineWidth: 2 });
+    }
 
-        async function refresh() {
+    async function fetchData() {
+        try {
             const res = await fetch('/api/data');
-            const data = await res.json();
-            
-            // Обновление цифр
-            document.getElementById('balance').innerText = `$${data.balance.toFixed(2)}`;
-            const badge = document.getElementById('status-badge');
-            badge.innerText = data.status;
-            badge.className = data.status === "В сделке" ? "px-3 py-1 rounded-full text-[10px] font-bold bg-green-500/20 text-green-500" : "px-3 py-1 rounded-full text-[10px] font-bold bg-zinc-800 text-zinc-400";
+            const json = await res.json();
 
-            // Обновление графика (принимаем массив точек {time, value})
-            if (data.chart_data) {
-                lineSeries.setData(data.chart_data);
+            balanceEl.textContent = `Баланс: ${json.balance} USDT`;
+            statusEl.textContent = `Статус: ${json.status}`;
+
+            if(json.history.length) {
+                historyBody.innerHTML = json.history.map(item => `
+                    <tr>
+                        <td>${item.asset}</td>
+                        <td>${item.time}</td>
+                        <td>${item.open}</td>
+                        <td>${item.close}</td>
+                        <td style="color: ${parseFloat(item.profit) >= 0 ? 'green' : 'red'}">${item.profit}</td>
+                    </tr>
+                `).join('');
+            } else {
+                historyBody.innerHTML = '<tr><td colspan="5">История пуста</td></tr>
+
+;';
             }
 
-            // Обновление истории
-            const list = document.getElementById('history-list');
-            list.innerHTML = data.history.map(trade => `
-                <div class="bg-zinc-900 p-4 rounded-2xl flex justify-between border border-zinc-800">
-                    <div>
-                        <div class="font-bold text-sm">${trade.asset}</div>
-                        <div class="text-[10px] text-zinc-500">${trade.time}</div>
-                    </div>
-                    <div class="text-right">
-                        <div class="font-bold ${trade.profit.includes('+') ? 'text-green-400' : 'text-red-400'}">${trade.profit}</div>
-                        <div class="text-[10px] text-zinc-500">${trade.open} ➔ ${trade.close}</div>
-                    </div>
-                </div>
-            `).join('');
-        }
+            createChart(json.chart_data);
 
-        setInterval(refresh, 5000);
-        refresh();
-    </script>
+        } catch (e) {
+            console.error('Ошибка загрузки данных', e);
+            balanceEl.textContent = 'Ошибка загрузки данных';
+            statusEl.textContent = '';
+            historyBody.innerHTML = '<tr><td colspan="5">Не удалось загрузить историю</td></tr>';
+        }
+    }
+
+    fetchData();
+    setInterval(fetchData, 15000); // обновление каждые 15 секунд
+</script>
+
 </body>
-</html>
+</html
